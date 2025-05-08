@@ -1,0 +1,6 @@
+python-telegram-bot
+python-telegram-bot[webhooks]>=13.7
+ics
+dateparser
+python-dotenv
+google-generativeai
