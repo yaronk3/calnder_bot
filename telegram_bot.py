@@ -76,7 +76,7 @@ def get_gemini_event_extraction_prompt(user_message: str) -> str:
     - "end_time_str": string (The end date and time. If only a duration is given (e.g., "for 1 hour"), calculate and provide this. If not specified and no duration, set to null.)
     - "duration_str": string (The duration of the event, e.g., "1 hour", "30 minutes". If an explicit end_time_str is found, this can be null or you can calculate it.)
     - "location": string (The physical location of the event. Set to null if not mentioned.)
-    - "reminder": integer (Minutes before the event to send a reminder. Look for phrases like "remind me 10 minutes before", "with a reminder 30 minutes before", etc. If not specified, set to null.)
+    - "reminder": integer (Minutes before the event to send a reminder. Look for phrases like "remind me 10 minutes before", "with a reminder 30 minutes before", "reminder 1 hour before", "30 minute reminder", etc. If not specified, set to null. IMPORTANT: Convert any hours to minutes, e.g. "1 hour before" should be 60.)
     - "timezone": "Asia/Jerusalem" (Always use Israel time zone)
 
     Important rules for your JSON output:
@@ -161,6 +161,16 @@ async def parse_event_from_text_gemini(text: str) -> tuple[str | None, datetime 
     duration_str = extracted_data.get("duration_str")
     location = extracted_data.get("location")
     reminder = extracted_data.get("reminder")
+    logger.info(f"Raw reminder value from Gemini: {reminder}")
+
+    # Ensure reminder is properly converted to integer
+    if reminder is not None:
+        try:
+            reminder = int(reminder)
+            logger.info(f"Converted reminder to integer: {reminder}")
+        except (ValueError, TypeError):
+            logger.warning(f"Could not convert reminder '{reminder}' to integer. Setting to None.")
+            reminder = None
 
     dateparser_settings = {
         'PREFER_DATES_FROM': 'future',
@@ -258,29 +268,44 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
 
     try:
         # Create Google Calendar link with correct time format
-        # Google Calendar expects times in UTC format without the 'Z' suffix
-        start_str = start_dt.strftime("%Y%m%dT%H%M%S")  # Removed the 'Z'
-        end_str = end_dt.strftime("%Y%m%dT%H%M%S")      # Removed the 'Z'
-        
-        # Add UTC timezone indicator for Google Calendar
-        # start_str += "Z"  # This is the proper format for Google Calendar
-        # end_str += "Z"    # This is the proper format for Google Calendar
-        
+        start_str = start_dt.strftime("%Y%m%dT%H%M%S")
+        end_str = end_dt.strftime("%Y%m%dT%H%M%S")
+
         # Debug logging
         logger.info(f"Calendar link times: start={start_str}, end={end_str}")
         logger.info(f"Original datetimes: start={start_dt.isoformat()}, end={end_dt.isoformat()}")
-        
+
         event_title_encoded = title.replace(" ", "+")
         location_encoded = location.replace(" ", "+") if location else ""
-        
-        gcal_link = f"https://calendar.google.com/calendar/render?action=TEMPLATE&text={event_title_encoded}&dates={start_str}/{end_str}"
+
+        # Build the calendar URL properly
+        gcal_base = "https://calendar.google.com/calendar/render"
+        gcal_params = [
+            "action=TEMPLATE",
+            f"text={event_title_encoded}",
+            f"dates={start_str}/{end_str}"
+        ]
+
         if location_encoded:
-            gcal_link += f"&location={location_encoded}"
-        
-        # Add reminder parameter if provided
+            gcal_params.append(f"location={location_encoded}")
+
+        # First turn off default reminders
+        gcal_params.append("useDefault=false")
+
+        # Add reminders - this is the key fix!
+        # Format: &remind=METHOD:MINUTES (Google Calendar API format)
         if reminder:
-            gcal_link += f"&reminders=popup%3A{reminder}"
-        
+            gcal_params.append(f"add=popup:{reminder}")
+
+        # Add default reminders
+        gcal_params.append("add=popup:10")
+        gcal_params.append("add=email:1440")
+
+        # Combine into the final URL
+        gcal_link = f"{gcal_base}?{('&').join(gcal_params)}"
+
+        logger.info(f"Generated Google Calendar link: {gcal_link}")
+
         # Create message with event details and Google Calendar link
         # Display times with proper timezone in the message
         message_parts = [f"<b>Event Created (via Gemini):</b> {title}"]
@@ -298,6 +323,25 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                 message_parts.append(f"Reminder: {reminder // 60} hours before")
             else:
                 message_parts.append(f"Reminder: {reminder} minutes before")
+            
+        # When displaying reminders in your message response:
+
+        reminder_text = []
+        if reminder:  # User-specified reminder
+            if reminder == 60:
+                reminder_text.append("- Custom: 1 hour before")
+            elif reminder > 60 and reminder % 60 == 0:
+                reminder_text.append(f"- Custom: {reminder // 60} hours before")
+            else:
+                reminder_text.append(f"- Custom: {reminder} minutes before")
+            
+        # Add your default reminders
+        reminder_text.append("- Popup notification: 10 minutes before")
+        reminder_text.append("- Email notification: 1 day before")  # Changed from 2 to 1 to match the 1440 minutes
+
+        if reminder_text:
+            message_parts.append("<b>Reminders:</b>")
+            message_parts.extend(reminder_text)
             
         message_parts.append("\n<b>Add this event to your calendar:</b>")
         message_parts.append(f"<a href='{gcal_link}'>Add to Google Calendar</a>")
