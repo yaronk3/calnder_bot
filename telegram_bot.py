@@ -86,6 +86,9 @@ def get_gemini_event_extraction_prompt(user_message: str) -> str:
     4. If a start time and a duration are given (e.g., "meeting tomorrow 2pm for 2 hours"), calculate "end_time_str".
     5. Be precise with date and time strings. Try to include AM/PM or use 24-hour format if it's clear from the input.
     6. Always treat times as Israel time (IST/IDT).
+    7. The user date is typically in the form of DD/MM/YYYY or DD.MM.YY (example formats), but other formats may also be supported.
+    8. The user always give the date in european format (DD/MM/YYYY) or DD.MM.YY (example formats).
+
 
     User message: "{user_message}"
 
@@ -163,6 +166,7 @@ async def parse_event_from_text_gemini(text: str) -> tuple[str | None, datetime 
         'PREFER_DATES_FROM': 'future',
         'TIMEZONE': 'Asia/Jerusalem',  # Use Israel time zone
         'RETURN_AS_TIMEZONE_AWARE': True,
+        'DATE_ORDER': 'DMY',  # Add this line to explicitly use day-month-year format
         'RELATIVE_BASE': datetime.now(timezone.utc).astimezone(
             dateparser.timezone_parser.StaticTzInfo('Asia/Jerusalem', timedelta(hours=3))
         )  # Use Israel time zone (+3 during DST)
